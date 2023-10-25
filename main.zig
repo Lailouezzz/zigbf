@@ -153,9 +153,9 @@ const BfInst = union(BfInstType) {
 
 		return switch (self) {
 			.PTR	=> |off| std.fmt.bufPrintZ(&buf.data, "ptr += {d};", .{off}) catch "",
-			.AT	=> |off| std.fmt.bufPrintZ(&buf.data, "*ptr += {d};", .{off}) catch "",
+			.AT		=> |off| std.fmt.bufPrintZ(&buf.data, "*ptr += {d};", .{off}) catch "",
 			.OUT	=> "putchar(*ptr);",
-			.IN	=> "*ptr = getchar();",
+			.IN		=> "*ptr = getchar();",
 			.WHILE	=> "while (*ptr != 0) {",
 		};
 	}
@@ -180,12 +180,44 @@ pub fn printScript(script: BfScript) void {
 	_printScript(script, 0);
 }
 
-const BfInterpreter = struct {
+const BfState = struct {
 	const Self = @This();
 
 	mem: [30000]u8 = [_]u8{0} ** 30000,
 	ptr: usize = 0,
-	script: ?*BfScript,
+
+	pub fn init() Self {
+		return Self{};
+	}
+
+	fn _execInst(self: *Self, inst: BfInst) anyerror!void {
+		switch (inst) {
+			.PTR	=> |off| self.ptr = @bitCast(@as(isize, @bitCast(self.ptr)) + off),
+			.AT		=> |off| self.mem[self.ptr] = @as(u8, @truncate(@as(u32, @bitCast(self.mem[self.ptr] + off)))),
+			.OUT	=> _ = try std.io.getStdOut().write(self.mem[self.ptr..self.ptr + 1]),
+			.IN		=> _ = try std.io.getStdIn().read(self.mem[self.ptr..self.ptr + 1]),
+			.WHILE	=> |script| try self._interpretWhile(script),
+		}
+	}
+
+	fn _interpretWhile(self: *Self, script: BfScript) !void {
+		while (self.mem[self.ptr] != 0) {
+			try self._interpretScript(script);
+		}
+	}
+
+	fn _interpretScript(self: *Self, script: BfScript) !void {
+		var instp = script.head;
+
+		while (instp) |inst| {
+			instp = inst.next;
+			try self._execInst(inst.data);
+		}
+	}
+
+	pub fn interpret(self: *Self, script: BfScript) !void {
+		try self._interpretScript(script);
+	}
 };
 
 pub fn main() !void {
@@ -193,9 +225,10 @@ pub fn main() !void {
 	defer arena.deinit();
 	const allocator = arena.allocator();
 
-	var instsp = try BfInstTypePrimitive.fromFile(allocator, std.io.getStdOut());
+	var instsp = try BfInstTypePrimitive.fromFile(allocator, std.io.getStdIn());
 	defer allocator.free(instsp);
 	var script = try BfInstTypePrimitive.compile(allocator, instsp);
 	printScript(script);
-
+	//var state = BfState.init();
+	//try state.interpret(script);
 }

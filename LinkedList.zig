@@ -4,7 +4,7 @@ pub fn LinkedList(comptime T: type, comptime destroycb: ?*const fn (self: *anyop
 	return struct {
 		const Self = @This();
 
-		const Elem = struct {
+		pub const Elem = struct {
 			prev: ?*Elem = null,
 			next: ?*Elem = null,
 			data: T = undefined,
