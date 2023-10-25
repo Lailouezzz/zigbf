@@ -1,4 +1,5 @@
 const std = @import("std");
+const LinkedList = @import("LinkedList.zig").LinkedList;
 
 const BfError = error {
 	SyntaxError,
@@ -59,18 +60,63 @@ const BfInstTypePrimitive = enum {
 					script = try allocator.realloc(script, script.len * 2);
 				script[tot] = inst;
 				tot += 1;
-				std.debug.print("{}\n", .{inst});
 			}
 		}
 		script = script[0..tot];
 		return script;
 	}
 
-	pub fn compile(allocator: std.mem.Allocator, instsp: []BfInstTypePrimitive) !BfScript {
-		var script = try BfScript.init(allocator);
-		_ = script;
-		_ = instsp;
-		return .{};
+	fn _compileCount(instsp: *[]const BfInstTypePrimitive, instp: [2]BfInstTypePrimitive) i32 {
+		var k: i32 = 0;
+
+		while (instsp.*.len != 0 and (instsp.*[0] == instp[0] or instsp.*[0] == instp[1])) {
+			if (instsp.*[0] == instp[0]) {
+				k += 1;
+			} else {
+				k -= 1;
+			}
+			instsp.* = instsp.*[1..];
+		}
+		return k;
+	}
+
+	fn _compile(allocator: std.mem.Allocator, instsp: *[]const BfInstTypePrimitive) !BfInst {
+		switch (instsp.*[0]) {
+			.INCPTR, .DECPTR	=> { return BfInst{.PTR = _compileCount(instsp, .{.INCPTR, .DECPTR})}; },
+			.INC, .DEC			=> { return BfInst{.AT = _compileCount(instsp, .{.INC, .DEC})}; },
+			.OUT				=> { instsp.* = instsp.*[1..]; return .OUT; },
+			.IN					=> { instsp.* = instsp.*[1..]; return .IN; },
+			.OPEN				=> {
+				instsp.* = instsp.*[1..];
+				var inst =  BfInst{.WHILE = try _compileAux(allocator, instsp)};
+				errdefer BfInst.destroy(&inst);
+				if (instsp.*.len == 0)
+					return BfError.SyntaxError;
+				instsp.* = instsp.*[1..];
+				return inst;
+			},
+			.CLOSE				=> unreachable,
+		}
+	}
+
+	fn _compileAux(allocator: std.mem.Allocator, instsp: *[]const BfInstTypePrimitive) anyerror!BfScript {
+		var script = BfScript.init(allocator);
+		errdefer script.deinit();
+		while (instsp.*.len != 0 and instsp.*[0] != .CLOSE) {
+			var inst = try _compile(allocator, instsp);
+			errdefer BfInst.destroy(&inst);
+			try script.pushBack(inst);
+		}
+		return script;
+	}
+
+	pub fn compile(allocator: std.mem.Allocator, instsp: []const BfInstTypePrimitive) !BfScript {
+		var instspcopy = instsp;
+		var script = try _compileAux(allocator, &instspcopy);
+		errdefer script.deinit();
+		if (instspcopy.len != 0)
+			return BfError.SyntaxError;
+		return script;
 	}
 };
 
@@ -82,80 +128,56 @@ const BfInstType = enum {
 	WHILE,	// []
 };
 
-const BfScript = LinkedList(BfInst, null);
-
+const BfScript = LinkedList(BfInst, BfInst.destroy);
 const BfInst = union(BfInstType) {
 	PTR: i32,			// <>
 	AT: i32,			// +-
 	OUT: void,			// .
 	IN: void,			// ,
 	WHILE: BfScript,	// []
-};
 
-fn LinkedList(comptime T: type, comptime destroycb: ?*const fn (self: *T) void) type {
-	return struct {
-		const Self = @This();
+	pub fn destroy(p: *anyopaque) void {
+		const self: *@This() = @ptrCast(@alignCast(p));
+		if (self.* == .WHILE) {
+			std.debug.print("destroy subscript size : {d}\n", .{self.*.WHILE.size});
+			self.*.WHILE.deinit();
+		} else {
+			std.debug.print("destroy : {any}\n", .{self.*});
+		}
+	}
 
-		const Elem = struct {
-			prev: ?*Elem = null,
-			next: ?*Elem = null,
-			data: T = undefined,
+	pub fn toStr(self: @This()) []const u8 {
+		const buf = struct {
+			var data: [1024]u8 = undefined;
 		};
 
-		head: ?*Elem = null,
-		tail: ?*Elem = null,
-		size: usize = 0,
-		allocator: std.mem.Allocator = undefined,
+		return switch (self) {
+			.PTR	=> |off| std.fmt.bufPrintZ(&buf.data, "ptr += {d};", .{off}) catch "",
+			.AT	=> |off| std.fmt.bufPrintZ(&buf.data, "*ptr += {d};", .{off}) catch "",
+			.OUT	=> "putchar(*ptr);",
+			.IN	=> "*ptr = getchar();",
+			.WHILE	=> "while (*ptr != 0) {",
+		};
+	}
+};
 
-		pub fn init(allocator: std.mem.Allocator) !Self {
-			return Self{ .allocator = allocator };
+fn _printScript(script: BfScript, tab: u32) void {
+	var instp = script.head;
+
+	while (instp) |inst| {
+		instp = inst.next;
+		if (inst.data == .WHILE) {
+			std.debug.print("{s:[pad]}while (*ptr != 0) {{\n", .{.s = "", .pad = tab});
+			_printScript(inst.data.WHILE, tab + 4);
+			std.debug.print("{s:[pad]}}}\n", .{.s = "", .pad = tab});
+		} else {
+			std.debug.print("{s:[pad]}{[str]s}\n", .{.s = "", .pad = tab, .str = inst.data.toStr()});
 		}
+	}
+}
 
-		pub fn deinit(self: *Self) void {
-			var ptr = self.head;
-
-			while (ptr) |elem| {
-				ptr = elem.next;
-				if (destroycb) |destroy|
-					destroy(&elem.data);
-				self.allocator.destroy(elem);
-			}
-		}
-
-		pub fn pushBack(self: *Self, data: T) !void {
-			var elem = try self.allocator.create(Elem);
-
-			elem.* = .{
-				.data = data,
-				.prev = self.tail,
-			};
-			if (self.tail) |*t| {
-				t.*.next = elem;
-				t.* = elem;
-			} else {
-				self.head = elem;
-				self.tail = elem;
-			}
-			self.size += 1;
-		}
-
-		pub fn popBack(self: *Self) !?T {
-			if (self.tail) |tail| {
-				const data = tail.data;
-				defer self.allocator.destroy(tail);
-				self.tail = tail.prev;
-				if (self.tail) |t| {
-					t.next = null;
-				} else {
-					self.head = null;
-				}
-				self.size -= 1;
-				return data;
-			} else {
-				return null;
-			}
-		}
-	};
+pub fn printScript(script: BfScript) void {
+	_printScript(script, 0);
 }
 
 const BfInterpreter = struct {
@@ -164,17 +186,6 @@ const BfInterpreter = struct {
 	mem: [30000]u8 = [_]u8{0} ** 30000,
 	ptr: usize = 0,
 	script: ?*BfScript,
-
-	fn interpretAux(self: *Self, startip: usize) !usize {
-		_ = self;
-		_ = startip;
-		return 0;
-	}
-
-	pub fn interpret(self: *Self) !void {
-		if (try self.interpretAux(0) != self.script.len)
-			return BfError.SyntaxError;
-	}
 };
 
 pub fn main() !void {
@@ -185,5 +196,6 @@ pub fn main() !void {
 	var instsp = try BfInstTypePrimitive.fromFile(allocator, std.io.getStdOut());
 	defer allocator.free(instsp);
 	var script = try BfInstTypePrimitive.compile(allocator, instsp);
-	_ = script;
+	printScript(script);
+
 }
