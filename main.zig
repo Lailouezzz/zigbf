@@ -228,7 +228,6 @@ pub fn main() !void {
 	var instsp = try BfInstTypePrimitive.fromFile(allocator, std.io.getStdIn());
 	defer allocator.free(instsp);
 	var script = try BfInstTypePrimitive.compile(allocator, instsp);
-	printScript(script);
-	//var state = BfState.init();
-	//try state.interpret(script);
+	var state = BfState.init();
+	try state.interpret(script);
 }
